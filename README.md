@@ -6,8 +6,8 @@
 
 - [ ] Clean Code
 - [ ] Pip Package Support
-- [x] Training & Inference Code
-- [x] Pre-trained Weights
+- [x] ~~Training & Inference Code~~
+- [x] ~~Pre-trained Weights~~
 
 
 ## Environment Setup
@@ -28,7 +28,7 @@ Checkpoints on FlyingThings, Sintel, KITTI, and Spring could be downloaded from 
 
 
 ## Usage
-The inference pipeline for a input video and the visualization on the predicted flow are in ```demo.py```.
+The inference pipeline for an input video and the visualization on the predicted flows are in ```demo.py```.
 
 ## Training Data Preparation
 
