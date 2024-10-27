@@ -10,8 +10,6 @@
 - [x] Pre-trained Weights
 
 
-
-
 ## Environment Setup
 
 ```
@@ -28,7 +26,11 @@ Download [twins_svt_large-90f6aaa9.pth](https://github.com/rwightman/pytorch-ima
 
 Checkpoints on FlyingThings, Sintel, KITTI, and Spring could be downloaded from [here](https://drive.google.com/drive/folders/1hkSsoDGB5b59lgcZPpERUqgCTV0o82hf?usp=sharing).
 
-## Data Preparation
+
+## Usage
+The inference pipeline for a input video and the visualization on the predicted flow are in ```demo.py```.
+
+## Training Data Preparation
 
 ```Shell
 ├── datasets
@@ -63,7 +65,7 @@ sh scripts/train_sintel_kitti.sh
 sh scripts/train_spring.sh
 ```
 
-## Inference
+## Inference on Specific Datasets
 ```
 sh scripts/infer.sh
 ```
