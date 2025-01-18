@@ -1,13 +1,23 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from flash_attn import flash_attn_qkvpacked_func, flash_attn_func
 import cv2
 import numpy as np
+import timm
+from einops import rearrange
+from torch import einsum
+from timm.layers import Mlp, DropPath, to_2tuple
+from timm.models.vision_transformer import Attention as timm_attn
+
+try:
+    from flash_attn import flash_attn_qkvpacked_func, flash_attn_func
+    enable_flash_attention = True
+except Exception as e:
+    enable_flash_attention = False
+    print('No Flash Attention... Use Naive Attention')
 
 autocast = torch.cuda.amp.autocast
- 
+
 def coords_grid(batch, ht, wd):
     coords = torch.meshgrid(torch.arange(ht), torch.arange(wd))
     coords = torch.stack(coords[::-1], dim=0).float()
@@ -78,21 +88,7 @@ class CorrBlock:
         corr = torch.matmul(fmap1.transpose(1, 2), fmap2)
         corr = corr.view(batch, ht, wd, 1, ht, wd)
         return corr / torch.sqrt(torch.tensor(dim).float())
-
-
-
-
-
-import torch
-import torch.nn as nn
-import timm
-import numpy as np
-from functools import partial
-from einops import rearrange
-from torch import nn, einsum
-from timm.layers import Mlp, DropPath, to_2tuple
-import math
-
+    
 
 class PatchEmbed(nn.Module):
     """ Image to Patch Embedding
@@ -164,8 +160,6 @@ class Twins_CSC(nn.Module):
         return x
 
 
-
-
 class SKBlock(nn.Module):
     def __init__(self, C_in, C_out, k_conv):
         super().__init__()
@@ -225,7 +219,7 @@ class Aggregate(nn.Module):
     def __init__(
         self,
         dim,
-        heads = 4,
+        heads = 1,
         dim_head = 128,
     ):
         super().__init__()
@@ -238,18 +232,26 @@ class Aggregate(nn.Module):
         self.gamma = nn.Parameter(torch.zeros(1))
 
 
-
     def forward(self, querys, keys, fmap):
         heads, b, c, h, w = self.heads, *fmap.shape
 
         v = self.to_v(fmap)        
-        v = rearrange(v, 'b (h d) x y -> b (x y) h d', h=heads)
-        # out = einsum('b h i j, b h j d -> b h i d', attn, v)
-        # out = rearrange(out, 'b h (x y) d -> b (h d) x y', x=h, y=w)
         
-        out = flash_attn_func(querys, keys, v, dropout_p=0.0, softmax_scale=self.scale, causal=False)
-        out = rearrange(out, 'b (x y) h c -> b (h c) x y', h=heads,x=h,y=w)
-
+        if enable_flash_attention:
+            v = rearrange(v, 'b (h d) x y -> b (x y) h d', h=heads)
+            querys, keys = map(lambda t: rearrange(t, 'b (h d) x y -> b (x y) h d', h=heads), (querys, keys))
+            out = flash_attn_func(querys, keys, v, dropout_p=0.0, softmax_scale=self.scale, causal=False)
+            out = rearrange(out, 'b (x y) h c -> b (h c) x y', h=heads,x=h,y=w)
+        else:
+            v = rearrange(v, 'b (h d) x y -> b h (x y) d', h=heads)
+            querys, keys = map(lambda t: rearrange(t, 'b (h d) x y -> b h x y d', h=heads), (querys, keys))
+            querys = self.scale * querys
+            sim = einsum('b h x y d, b h u v d -> b h x y u v', querys, keys)
+            sim = rearrange(sim, 'b h x y u v -> b h (x y) (u v)')
+            attn = sim.softmax(dim=-1)
+            
+            out = einsum('b h i j, b h j d -> b h i d', attn, v)
+            out = rearrange(out, 'b h (x y) d -> b (h d) x y', x=h, y=w)
 
         out = fmap + self.gamma * out
 
@@ -262,7 +264,7 @@ class Attention(nn.Module):
         self,
         dim,
         max_pos_size = 100,
-        heads = 4,
+        heads = 1,
         dim_head = 128,
     ):
         super().__init__()
@@ -271,15 +273,11 @@ class Attention(nn.Module):
         inner_dim = heads * dim_head
 
         self.to_qk = nn.Conv2d(dim, inner_dim * 2, 1, bias=False)
-        # self.pos_emb = RelPosEmb(max_pos_size, dim_head)
 
     def forward(self, fmap):
         heads, b, c, h, w = self.heads, *fmap.shape
 
         q, k = self.to_qk(fmap).chunk(2, dim=1) # b (head dim) x y
-        q, k = map(lambda t: rearrange(t, 'b (h d) x y -> b (x y) h d', h=heads), (q, k))
-
-        # attn = flash_attn_func(q, k, fmap, dropout_p=0.0, softmax_scale=self.scale, causal=False)
         
         return q, k
 
@@ -292,8 +290,7 @@ def zero_module(module):
         p.detach().zero_()
     return module
 
-from timm.models.vision_transformer import Attention as timm_attn
-from timm.layers import DropPath, Mlp
+
 class TransformerBlock(nn.Module):
     def __init__(self, dim, num_heads=1, mlp_ratio=2, drop_rate=0.):
         super().__init__()
@@ -321,6 +318,7 @@ class TransformerBlock(nn.Module):
         x = x + self.attn(self.norm1(x))
         x = x + self.drop_path2(self.mlp(self.norm2(x)))
         return x
+
 class TemporalLayer2(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -504,7 +502,7 @@ class InputPadder:
 def read_video_and_group_predict(video_path, device='cuda'):
     # model preparation
     with torch.no_grad():
-        model = StreamFlowT4('/apdcephfs_cq10/share_1367250/shangkunsun/StreamFlow2/ft_local/streamflow-spring.pth').to(device)
+        model = StreamFlowT4('streamflow-spring.pth').to(device)
 
     
     # 读取所有帧到列表
