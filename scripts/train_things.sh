@@ -23,7 +23,7 @@ fi
 DATA_PATH=/dataset/OpticalFlow
 CODE_PATH=/usr/sunshangkun/StreamFlow2/
 BASE_DIR=/usr/sunshangkun/StreamFlowResults/lr_6e-4_skflow_mf3_T3_b32_pretrained
-MODEL=SKFlow_MF3
+MODEL=SKFlow_MF8
 
 
 mkdir -p $BASE_DIR
